@@ -72,9 +72,9 @@ const Index = () => {
       <div className="absolute bottom-4 right-4 w-32 h-32 border-b-2 border-r-2 border-primary/30 rounded-br-lg" />
 
       {/* Main content */}
-      <div className="relative z-10 flex flex-col items-center justify-center min-h-screen p-4 gap-8">
+      <div className="relative z-10 flex flex-col min-h-screen">
         {/* Header */}
-        <div className="text-center animate-fade-in">
+        <div className="text-center pt-8 pb-4 animate-fade-in">
           <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-2 tracking-tight">
             Global Translator
           </h1>
@@ -83,26 +83,21 @@ const Index = () => {
           </p>
         </div>
 
-        {/* Globe container */}
-        <div className="relative w-full max-w-6xl aspect-[16/9] animate-fade-in">
-          {/* Circular frame around globe */}
-          <div className="absolute inset-0 rounded-full border-2 border-primary/20 shadow-[0_0_30px_rgba(0,217,255,0.2)]" />
-          <div className="absolute inset-4 rounded-full border border-primary/10" />
-          
-          {/* Globe */}
-          <div className="absolute inset-8">
+        {/* Globe container - fills most of screen */}
+        <div className="relative w-full flex-1 px-4 animate-fade-in">
+          <div className="w-full h-full max-w-7xl mx-auto">
             <Globe markers={markers} />
           </div>
         </div>
 
-        {/* Input */}
-        <div className="w-full animate-fade-in">
+        {/* Input at bottom */}
+        <div className="w-full px-4 pb-8 pt-4 animate-fade-in">
           <TranslationInput onTranslate={handleTranslate} isLoading={isLoading} />
         </div>
 
         {/* Markers info */}
         {markers.length > 0 && (
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 w-full max-w-2xl px-4 animate-fade-in">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 w-full max-w-2xl mx-auto px-4 pb-8 animate-fade-in">
             {markers.map((marker, i) => (
               <div
                 key={i}
