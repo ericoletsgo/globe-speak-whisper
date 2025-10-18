@@ -84,7 +84,7 @@ const Index = () => {
         </div>
 
         {/* Globe container */}
-        <div className="relative w-full max-w-2xl aspect-square animate-fade-in">
+        <div className="relative w-full max-w-6xl aspect-[16/9] animate-fade-in">
           {/* Circular frame around globe */}
           <div className="absolute inset-0 rounded-full border-2 border-primary/20 shadow-[0_0_30px_rgba(0,217,255,0.2)]" />
           <div className="absolute inset-4 rounded-full border border-primary/10" />
