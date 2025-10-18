@@ -84,7 +84,7 @@ const Index = () => {
         </div>
 
         {/* Globe container - fills most of screen */}
-        <div className="relative w-full flex-1 px-4 animate-fade-in min-h-[500px]">
+        <div className="relative w-full flex-1 px-4 animate-fade-in min-h-[650px]">
           <div className="w-full h-full max-w-7xl mx-auto border-2 border-primary/30 rounded-lg overflow-hidden bg-background/50 backdrop-blur-sm">
             <Globe markers={markers} />
           </div>
