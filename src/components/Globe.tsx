@@ -126,7 +126,7 @@ const GlobeCore = ({ markers = [] }: GlobeProps) => {
 export const Globe = ({ markers }: GlobeProps) => {
   return (
     <div className="w-full h-full">
-      <Canvas camera={{ position: [0, 0, 5], fov: 50 }}>
+      <Canvas camera={{ position: [0, 0, 3.5], fov: 75 }}>
         <GlobeCore markers={markers} />
       </Canvas>
     </div>
