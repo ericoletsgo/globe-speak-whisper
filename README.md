@@ -59,6 +59,32 @@ This project is built with:
 - React
 - shadcn-ui
 - Tailwind CSS
+- Mapbox GL JS (for the interactive globe)
+- Three.js (for 3D graphics - now replaced with Mapbox)
+
+## Setup Instructions
+
+### Mapbox Configuration
+
+This project uses Mapbox GL JS to display an interactive globe. To get it working:
+
+1. **Get a Mapbox Access Token:**
+   - Go to [Mapbox Account](https://account.mapbox.com/access-tokens/)
+   - Sign up or log in to your Mapbox account
+   - Create a new access token or use an existing one
+
+2. **Set the Access Token:**
+   - Create a `.env` file in the project root
+   - Add your token: `VITE_MAPBOX_ACCESS_TOKEN=your_actual_token_here`
+   - Or directly replace the placeholder in `src/components/Globe.tsx`
+
+3. **Run the project:**
+   ```sh
+   npm install
+   npm run dev
+   ```
+
+The globe will show a loading state until you provide a valid Mapbox access token.
 
 ## How can I deploy this project?
 

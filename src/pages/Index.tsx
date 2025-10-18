@@ -6,27 +6,27 @@ import { toast } from 'sonner';
 interface CountryMarker {
   country: string;
   translation: string;
-  position: [number, number, number];
+  position: [number, number, number]; // [longitude, latitude, altitude]
 }
 
 const Index = () => {
   const [markers, setMarkers] = useState<CountryMarker[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Language to country mapping with approximate 3D positions on globe
+  // Language to country mapping with longitude/latitude coordinates
   const languageCountries: Record<string, { name: string; position: [number, number, number] }> = {
-    'en': { name: 'United States', position: [-1.5, 0.8, 0.8] },
-    'es': { name: 'Spain', position: [-0.2, 0.8, 1.8] },
-    'fr': { name: 'France', position: [0.1, 0.9, 1.8] },
-    'de': { name: 'Germany', position: [0.3, 1.0, 1.7] },
-    'it': { name: 'Italy', position: [0.3, 0.8, 1.8] },
-    'pt': { name: 'Brazil', position: [-1.2, -0.5, 1.5] },
-    'ru': { name: 'Russia', position: [1.2, 1.2, 0.5] },
-    'ja': { name: 'Japan', position: [1.8, 0.7, -0.3] },
-    'zh': { name: 'China', position: [1.5, 0.5, 0.8] },
-    'ar': { name: 'Saudi Arabia', position: [0.8, 0.5, 1.5] },
-    'hi': { name: 'India', position: [1.2, 0.3, 1.3] },
-    'ko': { name: 'South Korea', position: [1.7, 0.7, 0.2] },
+    'en': { name: 'United States', position: [-95.7129, 37.0902, 0] }, // Center of USA
+    'es': { name: 'Spain', position: [-3.7492, 40.4637, 0] }, // Madrid
+    'fr': { name: 'France', position: [2.3522, 48.8566, 0] }, // Paris
+    'de': { name: 'Germany', position: [10.4515, 51.1657, 0] }, // Berlin
+    'it': { name: 'Italy', position: [12.5674, 41.8719, 0] }, // Rome
+    'pt': { name: 'Brazil', position: [-51.9253, -14.2350, 0] }, // Brasília
+    'ru': { name: 'Russia', position: [105.3188, 61.5240, 0] }, // Moscow
+    'ja': { name: 'Japan', position: [138.2529, 36.2048, 0] }, // Tokyo
+    'zh': { name: 'China', position: [104.1954, 35.8617, 0] }, // Beijing
+    'ar': { name: 'Saudi Arabia', position: [45.0792, 23.8859, 0] }, // Riyadh
+    'hi': { name: 'India', position: [78.9629, 20.5937, 0] }, // New Delhi
+    'ko': { name: 'South Korea', position: [127.7669, 35.9078, 0] }, // Seoul
   };
 
   const handleTranslate = async (text: string) => {
@@ -83,9 +83,9 @@ const Index = () => {
           </p>
         </div>
 
-        {/* Globe container - fills most of screen */}
+        {/* Globe container - much taller and fills most of screen */}
         <div className="relative w-full flex-1 px-4 pb-4 animate-fade-in">
-          <div className="w-full h-full max-w-7xl mx-auto border-2 border-primary/30 rounded-lg overflow-hidden bg-background/50 backdrop-blur-sm">
+          <div className="w-full h-full max-w-7xl mx-auto border-2 border-primary/30 rounded-lg overflow-hidden bg-background/50 backdrop-blur-sm" style={{ minHeight: '65vh' }}>
             <Globe markers={markers} />
           </div>
         </div>

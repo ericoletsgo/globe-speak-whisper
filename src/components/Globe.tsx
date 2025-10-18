@@ -1,134 +1,143 @@
-import { useRef } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { Sphere, Line } from '@react-three/drei';
-import * as THREE from 'three';
+import { useEffect, useRef, useState } from 'react';
+import mapboxgl from 'mapbox-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
 
 interface CountryMarker {
   country: string;
   translation: string;
-  position: [number, number, number];
+  position: [number, number, number]; // [longitude, latitude, altitude]
 }
 
 interface GlobeProps {
   markers?: CountryMarker[];
 }
 
-const GlobeCore = ({ markers = [] }: GlobeProps) => {
-  const globeRef = useRef<THREE.Mesh>(null);
-  const linesRef = useRef<THREE.Group>(null);
+export const Globe = ({ markers = [] }: GlobeProps) => {
+  const mapContainer = useRef<HTMLDivElement>(null);
+  const map = useRef<mapboxgl.Map | null>(null);
+  const [isLoaded, setIsLoaded] = useState(false);
 
-  useFrame((state) => {
-    if (globeRef.current) {
-      globeRef.current.rotation.y += 0.001;
-    }
-    if (linesRef.current) {
-      linesRef.current.rotation.y += 0.001;
-    }
-  });
+  useEffect(() => {
+    if (!mapContainer.current || map.current) return;
 
-  // Create latitude lines
-  const latitudeLines = [];
-  for (let i = -80; i <= 80; i += 20) {
-    const points = [];
-    const lat = (i * Math.PI) / 180;
-    const radius = Math.cos(lat) * 2;
-    for (let j = 0; j <= 64; j++) {
-      const lon = (j * Math.PI * 2) / 64;
-      points.push(
-        new THREE.Vector3(
-          radius * Math.cos(lon),
-          Math.sin(lat) * 2,
-          radius * Math.sin(lon)
-        )
-      );
+    // Set your Mapbox access token
+    // Replace 'XXXX' below with your actual Mapbox access token
+    // Get your token from https://account.mapbox.com/access-tokens/
+    const accessToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN || 'XXXX';
+    
+    if (!accessToken || accessToken === 'XXXX') {
+      console.warn('Please replace XXXX with your actual Mapbox access token in src/components/Globe.tsx');
     }
-    latitudeLines.push(points);
-  }
+    
+    mapboxgl.accessToken = accessToken;
 
-  // Create longitude lines
-  const longitudeLines = [];
-  for (let i = 0; i < 16; i++) {
-    const points = [];
-    const lon = (i * Math.PI * 2) / 16;
-    for (let j = 0; j <= 64; j++) {
-      const lat = ((j - 32) * Math.PI) / 32;
-      const radius = 2;
-      points.push(
-        new THREE.Vector3(
-          radius * Math.cos(lat) * Math.cos(lon),
-          radius * Math.sin(lat),
-          radius * Math.cos(lat) * Math.sin(lon)
-        )
-      );
-    }
-    longitudeLines.push(points);
-  }
+    map.current = new mapboxgl.Map({
+      container: mapContainer.current,
+      style: 'mapbox://styles/mapbox/standard',
+      projection: 'globe',
+      zoom: 1,
+      center: [0, 0],
+      pitch: 0,
+      bearing: 0
+    });
 
-  return (
-    <>
-      <ambientLight intensity={0.3} />
-      <pointLight position={[10, 10, 10]} intensity={0.5} color="#00d9ff" />
+    const currentMap = map.current;
+
+    currentMap.addControl(new mapboxgl.NavigationControl());
+    // Enable native scroll zoom for smooth Google Earth-like experience
+    currentMap.scrollZoom.enable();
+    currentMap.doubleClickZoom.enable();
+
+    currentMap.on('style.load', () => {
+      currentMap.setFog({});
+      setIsLoaded(true);
+    });
+
+    // Prevent page scrolling when scrolling on the map container
+    currentMap.getContainer().addEventListener('wheel', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    }, { passive: false });
+
+    return () => {
+      if (currentMap) {
+        currentMap.remove();
+      }
+    };
+  }, []);
+
+  // Update markers when they change
+  useEffect(() => {
+    if (!map.current || !isLoaded) return;
+
+    // Remove existing markers
+    const existingMarkers = document.querySelectorAll('.mapbox-gl-marker');
+    existingMarkers.forEach(marker => marker.remove());
+
+    // Add new markers
+    markers.forEach((marker) => {
+      const [lng, lat] = marker.position;
       
-      <group ref={linesRef}>
-        {/* Latitude lines */}
-        {latitudeLines.map((points, i) => (
-          <Line
-            key={`lat-${i}`}
-            points={points}
-            color="#00d9ff"
-            lineWidth={0.5}
-            transparent
-            opacity={0.3}
-          />
-        ))}
-        
-        {/* Longitude lines */}
-        {longitudeLines.map((points, i) => (
-          <Line
-            key={`lon-${i}`}
-            points={points}
-            color="#00d9ff"
-            lineWidth={0.5}
-            transparent
-            opacity={0.3}
-          />
-        ))}
-      </group>
+      const markerEl = document.createElement('div');
+      markerEl.className = 'mapbox-gl-marker';
+      markerEl.style.cssText = `
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #00d9ff;
+        border: 2px solid #ffffff;
+        box-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
+        cursor: pointer;
+        animation: pulse 2s infinite;
+      `;
 
-      {/* Globe sphere with transparency */}
-      <Sphere ref={globeRef} args={[2, 64, 64]}>
-        <meshPhongMaterial
-          color="#001a2e"
-          transparent
-          opacity={0.2}
-          shininess={100}
-        />
-      </Sphere>
+      // Add pulse animation CSS
+      if (!document.getElementById('marker-pulse-animation')) {
+        const style = document.createElement('style');
+        style.id = 'marker-pulse-animation';
+        style.textContent = `
+          @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.7; }
+            100% { transform: scale(1); opacity: 1; }
+          }
+        `;
+        document.head.appendChild(style);
+      }
 
-      {/* Markers for translations */}
-      {markers.map((marker, i) => (
-        <group key={i}>
-          <Sphere args={[0.05, 16, 16]} position={marker.position}>
-            <meshBasicMaterial color="#00d9ff" />
-          </Sphere>
-          <pointLight
-            position={marker.position}
-            intensity={0.5}
-            distance={1}
-            color="#00d9ff"
-          />
-        </group>
-      ))}
-    </>
-  );
-};
+      const popup = new mapboxgl.Popup({ offset: 25 })
+        .setHTML(`
+          <div class="p-2">
+            <div class="font-semibold text-sm text-primary mb-1">${marker.country}</div>
+            <div class="text-xs text-muted-foreground">${marker.translation}</div>
+          </div>
+        `);
 
-export const Globe = ({ markers }: GlobeProps) => {
+      new mapboxgl.Marker(markerEl)
+        .setLngLat([lng, lat])
+        .setPopup(popup)
+        .addTo(map.current);
+    });
+  }, [markers, isLoaded]);
+
   return (
-    <div className="w-full h-full">
-      <Canvas camera={{ position: [0, 0, 3.5], fov: 75 }}>
-        <GlobeCore markers={markers} />
-      </Canvas>
+    <div className="w-full h-full relative">
+      <div 
+        ref={mapContainer} 
+        className="w-full h-full"
+        style={{ 
+          minHeight: '65vh',
+          borderRadius: '8px'
+        }}
+      />
+      {!isLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/50 backdrop-blur-sm rounded-lg">
+          <div className="text-center">
+            <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+            <p className="text-sm text-muted-foreground">Loading globe...</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
