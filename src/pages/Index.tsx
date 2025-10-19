@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Globe } from '@/components/Globe';
 import { TranslationInput } from '@/components/TranslationInput';
 import { toast } from 'sonner';
+import { translationService, COUNTRY_LANGUAGES, LANGUAGE_GROUPS } from '@/services/translationService';
+import { ALL_COUNTRIES } from '@/data/countries';
 
 interface CountryMarker {
   country: string;
@@ -12,6 +14,7 @@ interface CountryMarker {
 const Index = () => {
   const [markers, setMarkers] = useState<CountryMarker[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [translationText, setTranslationText] = useState<string>('');
 
   // Language to country mapping with longitude/latitude coordinates
   const languageCountries: Record<string, { name: string; position: [number, number, number] }> = {
@@ -30,31 +33,52 @@ const Index = () => {
   };
 
   const handleTranslate = async (text: string) => {
+    if (text.length > 25) {
+      toast.error('Text must be 25 characters or less');
+      return;
+    }
+
     setIsLoading(true);
     setMarkers([]);
+    setTranslationText(text);
 
     try {
-      // For now, we'll simulate translations
-      // In a real app, this would call a translation API
-      const targetLanguages = ['es', 'fr', 'de', 'ja', 'zh', 'ar'];
+      // Detect source language
+      const sourceLang = translationService.detectLanguage(text);
       
+      // Get all unique language codes from the comprehensive database
+      const targetLanguages = [...new Set(ALL_COUNTRIES.map(country => country.languageCode))];
+      
+      toast.info('Translating text... This may take a moment.');
+      
+      // Translate to multiple languages
+      const translations = await translationService.translateToMultipleLanguages(
+        text, 
+        sourceLang, 
+        targetLanguages
+      );
+      
+      // Create markers for each translation - show one country per language
       const newMarkers: CountryMarker[] = targetLanguages.map(lang => {
-        const countryInfo = languageCountries[lang];
-        return {
-          country: countryInfo.name,
-          translation: `[${lang.toUpperCase()}] ${text}`, // Simulated translation
-          position: countryInfo.position,
-        };
-      });
-
-      // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
+        // Find the first country that speaks this language
+        const countryData = ALL_COUNTRIES.find(country => country.languageCode === lang);
+        const translation = translations[lang] || `[${lang.toUpperCase()}] ${text}`;
+        
+        if (countryData) {
+          return {
+            country: countryData.name,
+            translation: translation,
+            position: [...countryData.coordinates, 0] as [number, number, number],
+          };
+        }
+        return null;
+      }).filter(Boolean) as CountryMarker[];
 
       setMarkers(newMarkers);
-      toast.success('Translations loaded! Hover over markers to see translations.');
+      toast.success('Translations loaded! Click markers to see translations.');
     } catch (error) {
-      toast.error('Failed to translate text');
-      console.error(error);
+      toast.error('Failed to translate text. Please try again.');
+      console.error('Translation error:', error);
     } finally {
       setIsLoading(false);
     }
@@ -86,7 +110,7 @@ const Index = () => {
         {/* Globe container - much taller and fills most of screen */}
         <div className="relative w-full flex-1 px-4 pb-4 animate-fade-in">
           <div className="w-full h-full max-w-7xl mx-auto border-2 border-primary/30 rounded-lg overflow-hidden bg-background/50 backdrop-blur-sm" style={{ minHeight: '65vh' }}>
-            <Globe markers={markers} />
+            <Globe markers={markers} translationText={translationText} />
           </div>
         </div>
 

@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
+import { TranslationLabels } from './TranslationLabels';
+import { translationService, COUNTRY_LANGUAGES, LANGUAGE_GROUPS, ZOOM_LEVELS } from '@/services/translationService';
+import { ALL_COUNTRIES, CountryData } from '@/data/countries';
+
+// Helper function to get coordinates for countries from comprehensive database
+const getCountryCoordinates = (country: string): [number, number] | null => {
+  const countryData = ALL_COUNTRIES.find(c => c.name === country);
+  return countryData ? countryData.coordinates : null;
+};
 
 interface CountryMarker {
   country: string;
@@ -10,12 +19,15 @@ interface CountryMarker {
 
 interface GlobeProps {
   markers?: CountryMarker[];
+  translationText?: string;
 }
 
-export const Globe = ({ markers = [] }: GlobeProps) => {
+export const Globe = ({ markers = [], translationText }: GlobeProps) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [translationLabels, setTranslationLabels] = useState<any[]>([]);
 
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
@@ -52,6 +64,15 @@ export const Globe = ({ markers = [] }: GlobeProps) => {
       currentMap.setFog({});
       setIsLoaded(true);
     });
+
+    // Track zoom level changes
+    const updateZoomLevel = () => {
+      const zoom = currentMap.getZoom();
+      setZoomLevel(zoom);
+    };
+
+    currentMap.on('zoom', updateZoomLevel);
+    currentMap.on('moveend', updateZoomLevel);
 
     // Prevent page scrolling when scrolling on the map container
     currentMap.getContainer().addEventListener('wheel', (e) => {
@@ -120,6 +141,65 @@ export const Globe = ({ markers = [] }: GlobeProps) => {
     });
   }, [markers, isLoaded]);
 
+  // Generate translation labels based on zoom level and translation text
+  useEffect(() => {
+    if (!translationText || !isLoaded || !map.current) {
+      setTranslationLabels([]);
+      return;
+    }
+
+    const generateLabels = async () => {
+      try {
+        const sourceLang = translationService.detectLanguage(translationText);
+        
+        // Get countries based on zoom level
+        let countriesToShow: string[];
+        if (zoomLevel < ZOOM_LEVELS.MEDIUM) {
+          // Low zoom: show only major countries per language group
+          countriesToShow = Object.keys(LANGUAGE_GROUPS).map(lang => {
+            const countries = LANGUAGE_GROUPS[lang];
+            return countries[0]; // Return first country as representative
+          });
+        } else {
+          // Medium and high zoom: show all countries
+          countriesToShow = ALL_COUNTRIES.map(country => country.name);
+        }
+        
+        const labels = [];
+        
+        for (const country of countriesToShow) {
+          const countryData = ALL_COUNTRIES.find(c => c.name === country);
+          if (countryData) {
+            const translation = await translationService.translateText(
+              translationText, 
+              sourceLang, 
+              countryData.languageCode
+            );
+            
+            // Get country coordinates
+            const coordinates = getCountryCoordinates(country);
+            if (coordinates) {
+              labels.push({
+                id: `${country}-${countryData.languageCode}`,
+                text: translation,
+                position: coordinates,
+                language: countryData.language,
+                country: country,
+                pronunciation: countryData.pronunciation,
+              });
+            }
+          }
+        }
+        
+        setTranslationLabels(labels);
+      } catch (error) {
+        console.error('Error generating translation labels:', error);
+      }
+    };
+
+    generateLabels();
+  }, [translationText, zoomLevel, isLoaded]);
+
   return (
     <div className="w-full h-full relative">
       <div 
@@ -138,6 +218,11 @@ export const Globe = ({ markers = [] }: GlobeProps) => {
           </div>
         </div>
       )}
+      <TranslationLabels 
+        map={map.current} 
+        labels={translationLabels} 
+        zoomLevel={zoomLevel} 
+      />
     </div>
   );
 };

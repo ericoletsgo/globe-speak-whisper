@@ -27,9 +27,10 @@ export const TranslationInput = ({ onTranslate, isLoading = false }: Translation
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Enter text to translate..."
+            placeholder="Enter text to translate (max 25 characters)..."
             className="flex-1 bg-background/50 border-0 text-foreground placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-primary"
             disabled={isLoading}
+            maxLength={25}
           />
           <Button
             type="submit"
@@ -44,6 +45,11 @@ export const TranslationInput = ({ onTranslate, isLoading = false }: Translation
             <span className="ml-2">Translate</span>
           </Button>
         </div>
+      </div>
+      <div className="text-right mt-1">
+        <span className="text-xs text-muted-foreground">
+          {text.length}/25 characters
+        </span>
       </div>
     </form>
   );
