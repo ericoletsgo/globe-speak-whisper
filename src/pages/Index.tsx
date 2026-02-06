@@ -1,142 +1,172 @@
-import { useState } from 'react';
-import { Globe } from '@/components/Globe';
+import { useState, useRef, useCallback } from 'react';
+import { Globe, GlobeLabelData } from '@/components/Globe';
 import { TranslationInput } from '@/components/TranslationInput';
+import { translationService } from '@/services/translationService';
+import { ALL_COUNTRIES, CountryData } from '@/data/countries';
 import { toast } from 'sonner';
-import { translationService, COUNTRY_LANGUAGES, LANGUAGE_GROUPS } from '@/services/translationService';
-import { ALL_COUNTRIES } from '@/data/countries';
 
-interface CountryMarker {
-  country: string;
-  translation: string;
-  position: [number, number, number]; // [longitude, latitude, altitude]
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function makeLabel(
+  c: CountryData,
+  translations: Record<string, string>,
+  fallback: string,
+): GlobeLabelData {
+  return {
+    id: c.name,
+    lat: c.coordinates[1],
+    lng: c.coordinates[0],
+    translation: translations[c.languageCode] ?? fallback,
+    language: c.language,
+    country: c.name,
+    languageCode: c.languageCode,
+    tier: c.tier,
+  };
 }
 
+// ── Page ──────────────────────────────────────────────────────────────────────
+
 const Index = () => {
-  const [markers, setMarkers] = useState<CountryMarker[]>([]);
+  const [labels, setLabels] = useState<GlobeLabelData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [translationText, setTranslationText] = useState<string>('');
 
-  // Language to country mapping with longitude/latitude coordinates
-  const languageCountries: Record<string, { name: string; position: [number, number, number] }> = {
-    'en': { name: 'United States', position: [-95.7129, 37.0902, 0] }, // Center of USA
-    'es': { name: 'Spain', position: [-3.7492, 40.4637, 0] }, // Madrid
-    'fr': { name: 'France', position: [2.3522, 48.8566, 0] }, // Paris
-    'de': { name: 'Germany', position: [10.4515, 51.1657, 0] }, // Berlin
-    'it': { name: 'Italy', position: [12.5674, 41.8719, 0] }, // Rome
-    'pt': { name: 'Brazil', position: [-51.9253, -14.2350, 0] }, // Brasília
-    'ru': { name: 'Russia', position: [105.3188, 61.5240, 0] }, // Moscow
-    'ja': { name: 'Japan', position: [138.2529, 36.2048, 0] }, // Tokyo
-    'zh': { name: 'China', position: [104.1954, 35.8617, 0] }, // Beijing
-    'ar': { name: 'Saudi Arabia', position: [45.0792, 23.8859, 0] }, // Riyadh
-    'hi': { name: 'India', position: [78.9629, 20.5937, 0] }, // New Delhi
-    'ko': { name: 'South Korea', position: [127.7669, 35.9078, 0] }, // Seoul
-  };
+  // Refs so async callbacks always read the latest values
+  const currentTextRef = useRef('');
+  const translationCacheRef = useRef<Record<string, string>>({});
+  const loadingLangsRef = useRef(new Set<string>());
 
-  const handleTranslate = async (text: string) => {
-    if (text.length > 25) {
-      toast.error('Text must be 25 characters or less');
+  /** Rebuild the labels array from whatever translations are cached so far. */
+  const rebuildLabels = useCallback(() => {
+    const text = currentTextRef.current;
+    const cache = translationCacheRef.current;
+    if (!text) {
+      setLabels([]);
       return;
     }
+    // Only include countries whose language has been translated
+    setLabels(
+      ALL_COUNTRIES
+        .filter(c => cache[c.languageCode] != null)
+        .map(c => makeLabel(c, cache, text)),
+    );
+  }, []);
 
+  // ── Initial translate (tier-1 only → fast) ──
+
+  const handleTranslate = async (text: string) => {
+    // Reset everything
+    currentTextRef.current = text;
+    translationCacheRef.current = {};
+    loadingLangsRef.current.clear();
+    setLabels([]);
     setIsLoading(true);
-    setMarkers([]);
-    setTranslationText(text);
 
     try {
-      // Detect source language
-      const sourceLang = translationService.detectLanguage(text);
-      
-      // Get all unique language codes from the comprehensive database
-      const targetLanguages = [...new Set(ALL_COUNTRIES.map(country => country.languageCode))];
-      
-      toast.info('Translating text... This may take a moment.');
-      
-      // Translate to multiple languages
-      const translations = await translationService.translateToMultipleLanguages(
-        text, 
-        sourceLang, 
-        targetLanguages
-      );
-      
-      // Create markers for each translation - show one country per language
-      const newMarkers: CountryMarker[] = targetLanguages.map(lang => {
-        // Find the first country that speaks this language
-        const countryData = ALL_COUNTRIES.find(country => country.languageCode === lang);
-        const translation = translations[lang] || `[${lang.toUpperCase()}] ${text}`;
-        
-        if (countryData) {
-          return {
-            country: countryData.name,
-            translation: translation,
-            position: [...countryData.coordinates, 0] as [number, number, number],
-          };
-        }
-        return null;
-      }).filter(Boolean) as CountryMarker[];
+      const tier1Langs = [
+        ...new Set(
+          ALL_COUNTRIES.filter(c => c.tier === 1).map(c => c.languageCode),
+        ),
+      ];
 
-      setMarkers(newMarkers);
-      toast.success('Translations loaded! Click markers to see translations.');
-    } catch (error) {
-      toast.error('Failed to translate text. Please try again.');
-      console.error('Translation error:', error);
+      const trans = await translationService.translateToMultipleLanguages(
+        text,
+        'en',
+        tier1Langs,
+      );
+
+      // Only apply if user hasn't typed something new
+      if (currentTextRef.current !== text) return;
+
+      translationCacheRef.current = trans;
+      rebuildLabels();
+      toast.success('Translations loaded – zoom in for more!');
+    } catch (err) {
+      console.error('Translation error:', err);
+      toast.error('Translation failed – please try again.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  return (
-    <div className="min-h-screen bg-background relative overflow-hidden">
-      {/* Background gradient effect */}
-      <div className="absolute inset-0 bg-gradient-radial opacity-50" />
-      
-      {/* Corner decorative elements */}
-      <div className="absolute top-4 left-4 w-32 h-32 border-t-2 border-l-2 border-primary/30 rounded-tl-lg" />
-      <div className="absolute top-4 right-4 w-32 h-32 border-t-2 border-r-2 border-primary/30 rounded-tr-lg" />
-      <div className="absolute bottom-4 left-4 w-32 h-32 border-b-2 border-l-2 border-primary/30 rounded-bl-lg" />
-      <div className="absolute bottom-4 right-4 w-32 h-32 border-b-2 border-r-2 border-primary/30 rounded-br-lg" />
+  // ── Lazy-load translations when the user zooms to a new tier ──
 
-      {/* Main content */}
-      <div className="relative z-10 flex flex-col min-h-screen">
-        {/* Header */}
-        <div className="text-center pt-8 pb-4 animate-fade-in">
-          <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-2 tracking-tight">
-            Global Translator
+  const handleZoomTierChange = useCallback(
+    async (newTier: 1 | 2 | 3) => {
+      const text = currentTextRef.current;
+      if (!text) return;
+
+      // Which language codes do we need for this tier?
+      const needed = [
+        ...new Set(
+          ALL_COUNTRIES
+            .filter(c => c.tier <= newTier)
+            .map(c => c.languageCode),
+        ),
+      ];
+
+      const cache = translationCacheRef.current;
+      const loading = loadingLangsRef.current;
+      const missing = needed.filter(l => !cache[l] && !loading.has(l));
+
+      if (missing.length === 0) {
+        // All translations are already cached – just refresh labels
+        // (the Globe may now be showing a wider tier)
+        rebuildLabels();
+        return;
+      }
+
+      // Mark as in-flight to avoid duplicate requests
+      missing.forEach(l => loading.add(l));
+
+      try {
+        const extra = await translationService.translateToMultipleLanguages(
+          text,
+          'en',
+          missing,
+        );
+
+        // Only apply if user hasn't changed the input
+        if (currentTextRef.current !== text) return;
+
+        translationCacheRef.current = { ...translationCacheRef.current, ...extra };
+        missing.forEach(l => loading.delete(l));
+        rebuildLabels();
+      } catch (err) {
+        console.error('Lazy translation error:', err);
+        missing.forEach(l => loading.delete(l));
+      }
+    },
+    [rebuildLabels],
+  );
+
+  // ── Render ──
+
+  return (
+    <div className="h-screen w-screen flex flex-col overflow-hidden bg-[#070b14]">
+      {/* ── Floating header ── */}
+      <div className="absolute top-0 left-0 right-0 z-20 pointer-events-none select-none">
+        <div className="text-center pt-5 pb-2">
+          <h1 className="text-2xl md:text-3xl font-bold text-white/90 tracking-tight drop-shadow-lg">
+            Globe Speak
           </h1>
-          <p className="text-muted-foreground text-sm md:text-base">
-            Translate across the world in real-time
+          <p className="text-[11px] text-sky-300/40 mt-0.5">
+            See &amp; hear translations across the world
           </p>
         </div>
+      </div>
 
-        {/* Globe container - much taller and fills most of screen */}
-        <div className="relative w-full flex-1 px-4 pb-4 animate-fade-in">
-          <div className="w-full h-full max-w-7xl mx-auto border-2 border-primary/30 rounded-lg overflow-hidden bg-background/50 backdrop-blur-sm" style={{ minHeight: '65vh' }}>
-            <Globe markers={markers} translationText={translationText} />
-          </div>
-        </div>
+      {/* ── Globe fills screen ── */}
+      <div className="flex-1 w-full relative">
+        <Globe
+          labels={labels}
+          isLoading={isLoading}
+          onZoomTierChange={handleZoomTierChange}
+        />
+      </div>
 
-        {/* Input at bottom */}
-        <div className="w-full px-4 pb-8 pt-4 animate-fade-in">
-          <TranslationInput onTranslate={handleTranslate} isLoading={isLoading} />
-        </div>
-
-        {/* Markers info */}
-        {markers.length > 0 && (
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 w-full max-w-2xl mx-auto px-4 pb-8 animate-fade-in">
-            {markers.map((marker, i) => (
-              <div
-                key={i}
-                className="p-3 bg-card/30 backdrop-blur-sm border border-primary/20 rounded-lg hover:border-primary/40 transition-colors"
-              >
-                <div className="text-xs text-primary font-semibold mb-1">
-                  {marker.country}
-                </div>
-                <div className="text-xs text-muted-foreground truncate">
-                  {marker.translation}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+      {/* ── Floating input ── */}
+      <div className="absolute bottom-5 left-0 right-0 z-20">
+        <TranslationInput onTranslate={handleTranslate} isLoading={isLoading} />
       </div>
     </div>
   );

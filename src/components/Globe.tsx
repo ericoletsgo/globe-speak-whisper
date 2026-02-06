@@ -1,228 +1,218 @@
-import { useEffect, useRef, useState } from 'react';
-import mapboxgl from 'mapbox-gl';
-import 'mapbox-gl/dist/mapbox-gl.css';
-import { TranslationLabels } from './TranslationLabels';
-import { translationService, COUNTRY_LANGUAGES, LANGUAGE_GROUPS, ZOOM_LEVELS } from '@/services/translationService';
-import { ALL_COUNTRIES, CountryData } from '@/data/countries';
+/**
+ * 3D Globe component using react-globe.gl
+ *
+ * Uses the built-in `labelsData` layer (WebGL text sprites) instead of
+ * HTML overlays.  This avoids CSS2DRenderer issues that can freeze the
+ * Three.js render loop.
+ *
+ * • Click any label → hear the pronunciation via Web Speech API
+ * • Hover any label → info tooltip in the corner
+ * • Zoom in/out    → more/fewer labels appear (tier system)
+ */
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import GlobeGL from 'react-globe.gl';
+import { speechService } from '@/services/speechService';
 
-// Helper function to get coordinates for countries from comprehensive database
-const getCountryCoordinates = (country: string): [number, number] | null => {
-  const countryData = ALL_COUNTRIES.find(c => c.name === country);
-  return countryData ? countryData.coordinates : null;
-};
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-interface CountryMarker {
-  country: string;
+export interface GlobeLabelData {
+  id: string;
+  lat: number;
+  lng: number;
   translation: string;
-  position: [number, number, number]; // [longitude, latitude, altitude]
+  language: string;
+  country: string;
+  languageCode: string;
+  tier: number;
 }
 
 interface GlobeProps {
-  markers?: CountryMarker[];
-  translationText?: string;
+  labels: GlobeLabelData[];
+  isLoading?: boolean;
+  onZoomTierChange?: (tier: 1 | 2 | 3) => void;
 }
 
-export const Globe = ({ markers = [], translationText }: GlobeProps) => {
-  const mapContainer = useRef<HTMLDivElement>(null);
-  const map = useRef<mapboxgl.Map | null>(null);
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [translationLabels, setTranslationLabels] = useState<any[]>([]);
+// ── Component ─────────────────────────────────────────────────────────────────
 
+export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
+  const globeEl = useRef<any>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dims, setDims] = useState({ w: 0, h: 0 });
+  const [zoomTier, setZoomTier] = useState<1 | 2 | 3>(1);
+  const [ready, setReady] = useState(false);
+  const [activeLabel, setActiveLabel] = useState<GlobeLabelData | null>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  /* ── Track container size ── */
   useEffect(() => {
-    if (!mapContainer.current || map.current) return;
-
-    // Set your Mapbox access token
-    // Replace 'XXXX' below with your actual Mapbox access token
-    // Get your token from https://account.mapbox.com/access-tokens/
-    const accessToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN || 'XXXX';
-    
-    if (!accessToken || accessToken === 'XXXX') {
-      console.warn('Please replace XXXX with your actual Mapbox access token in src/components/Globe.tsx');
-    }
-    
-    mapboxgl.accessToken = accessToken;
-
-    map.current = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/standard',
-      projection: 'globe',
-      zoom: 1,
-      center: [0, 0],
-      pitch: 0,
-      bearing: 0
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => {
+      const { width, height } = e.contentRect;
+      setDims({ w: Math.floor(width), h: Math.floor(height) });
     });
-
-    const currentMap = map.current;
-
-    currentMap.addControl(new mapboxgl.NavigationControl());
-    // Enable native scroll zoom for smooth Google Earth-like experience
-    currentMap.scrollZoom.enable();
-    currentMap.doubleClickZoom.enable();
-
-    currentMap.on('style.load', () => {
-      currentMap.setFog({});
-      setIsLoaded(true);
-    });
-
-    // Track zoom level changes
-    const updateZoomLevel = () => {
-      const zoom = currentMap.getZoom();
-      setZoomLevel(zoom);
-    };
-
-    currentMap.on('zoom', updateZoomLevel);
-    currentMap.on('moveend', updateZoomLevel);
-
-    // Prevent page scrolling when scrolling on the map container
-    currentMap.getContainer().addEventListener('wheel', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    }, { passive: false });
-
-    return () => {
-      if (currentMap) {
-        currentMap.remove();
-      }
-    };
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
 
-  // Update markers when they change
+  /* ── Initial camera & controls ── */
   useEffect(() => {
-    if (!map.current || !isLoaded) return;
+    if (!ready || !globeEl.current) return;
+    globeEl.current.pointOfView({ lat: 25, lng: -20, altitude: 2.5 }, 1200);
 
-    // Remove existing markers
-    const existingMarkers = document.querySelectorAll('.mapbox-gl-marker');
-    existingMarkers.forEach(marker => marker.remove());
-
-    // Add new markers
-    markers.forEach((marker) => {
-      const [lng, lat] = marker.position;
-      
-      const markerEl = document.createElement('div');
-      markerEl.className = 'mapbox-gl-marker';
-      markerEl.style.cssText = `
-        width: 20px;
-        height: 20px;
-        border-radius: 50%;
-        background: #00d9ff;
-        border: 2px solid #ffffff;
-        box-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
-        cursor: pointer;
-        animation: pulse 2s infinite;
-      `;
-
-      // Add pulse animation CSS
-      if (!document.getElementById('marker-pulse-animation')) {
-        const style = document.createElement('style');
-        style.id = 'marker-pulse-animation';
-        style.textContent = `
-          @keyframes pulse {
-            0% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(1.2); opacity: 0.7; }
-            100% { transform: scale(1); opacity: 1; }
-          }
-        `;
-        document.head.appendChild(style);
-      }
-
-      const popup = new mapboxgl.Popup({ offset: 25 })
-        .setHTML(`
-          <div class="p-2">
-            <div class="font-semibold text-sm text-primary mb-1">${marker.country}</div>
-            <div class="text-xs text-muted-foreground">${marker.translation}</div>
-          </div>
-        `);
-
-      new mapboxgl.Marker(markerEl)
-        .setLngLat([lng, lat])
-        .setPopup(popup)
-        .addTo(map.current);
-    });
-  }, [markers, isLoaded]);
-
-  // Generate translation labels based on zoom level and translation text
-  useEffect(() => {
-    if (!translationText || !isLoaded || !map.current) {
-      setTranslationLabels([]);
-      return;
+    const c = globeEl.current.controls();
+    if (c) {
+      c.autoRotate = true;
+      c.autoRotateSpeed = 0.35;
+      c.enableDamping = true;
+      c.dampingFactor = 0.12;
     }
+  }, [ready]);
 
-    const generateLabels = async () => {
-      try {
-        const sourceLang = translationService.detectLanguage(translationText);
-        
-        // Get countries based on zoom level
-        let countriesToShow: string[];
-        if (zoomLevel < ZOOM_LEVELS.MEDIUM) {
-          // Low zoom: show only major countries per language group
-          countriesToShow = Object.keys(LANGUAGE_GROUPS).map(lang => {
-            const countries = LANGUAGE_GROUPS[lang];
-            return countries[0]; // Return first country as representative
-          });
-        } else {
-          // Medium and high zoom: show all countries
-          countriesToShow = ALL_COUNTRIES.map(country => country.name);
-        }
-        
-        const labels = [];
-        
-        for (const country of countriesToShow) {
-          const countryData = ALL_COUNTRIES.find(c => c.name === country);
-          if (countryData) {
-            const translation = await translationService.translateText(
-              translationText, 
-              sourceLang, 
-              countryData.languageCode
-            );
-            
-            // Get country coordinates
-            const coordinates = getCountryCoordinates(country);
-            if (coordinates) {
-              labels.push({
-                id: `${country}-${countryData.languageCode}`,
-                text: translation,
-                position: coordinates,
-                language: countryData.language,
-                country: country,
-                pronunciation: countryData.pronunciation,
-              });
-            }
-          }
-        }
-        
-        setTranslationLabels(labels);
-      } catch (error) {
-        console.error('Error generating translation labels:', error);
-      }
+  /* ── Toggle auto-rotate ── */
+  useEffect(() => {
+    if (!ready || !globeEl.current) return;
+    const c = globeEl.current.controls();
+    if (c) c.autoRotate = labels.length === 0;
+  }, [labels.length, ready]);
+
+  /* ── Zoom-tier tracking ── */
+  useEffect(() => {
+    if (!ready || !globeEl.current) return;
+    const controls = globeEl.current.controls();
+    if (!controls) return;
+
+    let raf: number;
+    const onChange = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const pov = globeEl.current?.pointOfView?.();
+        if (!pov) return;
+        const alt: number = pov.altitude;
+        const t: 1 | 2 | 3 = alt > 1.8 ? 1 : alt > 0.6 ? 2 : 3;
+        setZoomTier(prev => (prev !== t ? t : prev));
+      });
     };
 
-    generateLabels();
-  }, [translationText, zoomLevel, isLoaded]);
+    controls.addEventListener('change', onChange);
+    return () => {
+      controls.removeEventListener('change', onChange);
+      cancelAnimationFrame(raf);
+    };
+  }, [ready]);
 
+  /* ── Notify parent of tier changes (debounced) ── */
+  useEffect(() => {
+    if (!onZoomTierChange) return;
+    const id = setTimeout(() => onZoomTierChange(zoomTier), 400);
+    return () => clearTimeout(id);
+  }, [zoomTier, onZoomTierChange]);
+
+  /* ── Visible labels filtered by tier ── */
+  const visibleLabels = useMemo(
+    () =>
+      labels
+        .filter(d => d.tier <= zoomTier)
+        .map(d => ({
+          ...d,
+          _sub: zoomTier === 1 ? d.language : d.country,
+          _size: d.tier === 1 ? 1.6 : d.tier === 2 ? 1.1 : 0.75,
+          _dotR: d.tier === 1 ? 0.4 : d.tier === 2 ? 0.3 : 0.2,
+        })),
+    [labels, zoomTier],
+  );
+
+  /* ── Label click → speak pronunciation ── */
+  const handleLabelClick = useCallback((label: any) => {
+    if (!label) return;
+    speechService.speak(label.translation, label.languageCode);
+    setActiveLabel(label);
+    setIsSpeaking(true);
+    setTimeout(() => setIsSpeaking(false), 2500);
+  }, []);
+
+  /* ── Label hover → show tooltip ── */
+  const handleLabelHover = useCallback((label: any) => {
+    if (label) {
+      setActiveLabel(label);
+      setIsSpeaking(false);
+    } else {
+      // small delay so the tooltip doesn't flicker off instantly
+      setTimeout(() => setActiveLabel(prev => (prev === label ? null : prev)), 600);
+    }
+  }, []);
+
+  /* ── Render ── */
   return (
-    <div className="w-full h-full relative">
-      <div 
-        ref={mapContainer} 
-        className="w-full h-full"
-        style={{ 
-          minHeight: '65vh',
-          borderRadius: '8px'
-        }}
-      />
-      {!isLoaded && (
-        <div className="absolute inset-0 flex items-center justify-center bg-background/50 backdrop-blur-sm rounded-lg">
-          <div className="text-center">
-            <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-            <p className="text-sm text-muted-foreground">Loading globe...</p>
+    <div ref={containerRef} className="w-full h-full relative">
+      {dims.w > 0 && dims.h > 0 && (
+        <GlobeGL
+          ref={globeEl}
+          width={dims.w}
+          height={dims.h}
+          globeImageUrl="//unpkg.com/three-globe/example/img/earth-blue-marble.jpg"
+          bumpImageUrl="//unpkg.com/three-globe/example/img/earth-topology.png"
+          backgroundImageUrl="//unpkg.com/three-globe/example/img/night-sky.png"
+          atmosphereColor="lightskyblue"
+          atmosphereAltitude={0.15}
+          animateIn={true}
+          labelsData={visibleLabels}
+          labelLat={(d: any) => d.lat}
+          labelLng={(d: any) => d.lng}
+          labelText={(d: any) => d.translation}
+          labelSize={(d: any) => d._size}
+          labelColor={() => 'rgba(220, 240, 255, 0.95)'}
+          labelDotRadius={(d: any) => d._dotR}
+          labelDotOrientation={() => 'bottom' as const}
+          labelAltitude={0.015}
+          labelResolution={3}
+          onLabelClick={handleLabelClick}
+          onLabelHover={handleLabelHover}
+          onGlobeReady={() => setReady(true)}
+        />
+      )}
+
+      {/* ── Info tooltip (top-right corner) ── */}
+      {activeLabel && (
+        <div className="absolute top-4 right-4 z-20 bg-black/75 backdrop-blur-md rounded-xl px-4 py-3 border border-white/10 shadow-2xl min-w-[180px] pointer-events-none select-none">
+          <p className="text-white font-semibold text-base" dir="auto">
+            {activeLabel.translation}
+          </p>
+          <p className="text-sky-300/60 text-xs mt-0.5">
+            {activeLabel.country} · {activeLabel.language}
+          </p>
+          {isSpeaking ? (
+            <p className="text-emerald-400 text-xs mt-1.5 flex items-center gap-1">
+              <span className="inline-block animate-pulse">🔊</span> Speaking…
+            </p>
+          ) : (
+            <p className="text-white/30 text-[10px] mt-1.5">
+              Click a label to hear it pronounced
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ── Hint bar (when labels are shown) ── */}
+      {labels.length > 0 && !isLoading && (
+        <div className="absolute bottom-1 left-0 right-0 text-center pointer-events-none z-10">
+          <span className="text-[10px] text-white/20 select-none">
+            🔊 Click any translation to hear it · Scroll to zoom
+          </span>
+        </div>
+      )}
+
+      {/* ── Loading overlay ── */}
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+          <div className="bg-black/70 backdrop-blur-md rounded-2xl px-8 py-5 text-center border border-white/10 shadow-2xl">
+            <div className="w-7 h-7 border-2 border-sky-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+            <p className="text-sm text-sky-200/80 font-medium">
+              Translating across the globe…
+            </p>
           </div>
         </div>
       )}
-      <TranslationLabels 
-        map={map.current} 
-        labels={translationLabels} 
-        zoomLevel={zoomLevel} 
-      />
     </div>
   );
 };
