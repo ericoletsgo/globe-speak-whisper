@@ -1,13 +1,22 @@
 /**
- * Web Speech API service – pronounces translations using the browser's
- * built-in text-to-speech engine.  No external API key required.
+ * Multi-engine Text-to-Speech service.
  *
- * Voice matching strategy (tries in order):
- *   1. Exact locale match  (e.g. voice.lang === 'ja-JP')
- *   2. Prefix match         (e.g. voice.lang starts with 'ja')
- *   3. Pre-built map        (populated at page load + voiceschanged)
- *   4. Fallback: just set utterance.lang and let the browser pick
+ * STRATEGY (in priority order, all synchronous from click handler):
+ *
+ * 1. pickVoice() finds an explicit voice match → use Web Speech API
+ *    with `utterance.voice` set.
+ *
+ * 2. No explicit match → try Google Translate TTS <audio> element.
+ *    If audio loads successfully → plays the correct language.
+ *    If audio fails (403 / CORS / network) → falls back to (3).
+ *
+ * 3. Web Speech API with only `utterance.lang` set.  Chrome will
+ *    auto-select its Google network voice from the lang hint even
+ *    when getVoices() doesn't list it — this is how French etc.
+ *    keep working.
  */
+
+// ── Language → BCP 47 locale ────────────────────────────────────────────────
 
 const LOCALE_MAP: Record<string, string> = {
   en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE',
@@ -30,98 +39,249 @@ const LOCALE_MAP: Record<string, string> = {
   dz: 'dz-BT',
 };
 
+const LANG_FALLBACKS: Record<string, string[]> = {
+  zh: ['zh-CN', 'zh-TW', 'zh-HK', 'cmn-Hans-CN'],
+  no: ['nb-NO', 'nn-NO'],
+  sr: ['sr-RS', 'sr-Latn-RS', 'hr-HR'],
+  bs: ['bs-BA', 'hr-HR', 'sr-RS'],
+  me: ['sr-ME', 'sr-RS', 'hr-HR'],
+  pt: ['pt-BR', 'pt-PT'],
+  tl: ['fil-PH', 'tl-PH'],
+};
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function once(fn?: () => void): () => void {
+  let called = false;
+  return () => {
+    if (called) return;
+    called = true;
+    fn?.();
+  };
+}
+
+// ── Service ─────────────────────────────────────────────────────────────────
+
 class SpeechService {
   private synth: SpeechSynthesis | null = null;
-  private voicesByLang = new Map<string, SpeechSynthesisVoice>();
+  private cachedVoices: SpeechSynthesisVoice[] = [];
+  private currentAudio: HTMLAudioElement | null = null;
 
   constructor() {
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       this.synth = window.speechSynthesis;
-      this.loadVoices();
-      this.synth.addEventListener('voiceschanged', () => this.loadVoices());
+      this.refreshVoiceCache();
+      this.synth.addEventListener('voiceschanged', () =>
+        this.refreshVoiceCache(),
+      );
     }
   }
 
-  /* ── internal ── */
+  // ── Voice cache ─────────────────────────────────────────────────────────
 
-  private loadVoices() {
+  private refreshVoiceCache() {
     if (!this.synth) return;
-    const voices = this.synth.getVoices();
-    this.voicesByLang.clear();
+    const v = this.synth.getVoices();
+    if (v.length > 0) this.cachedVoices = v;
+  }
 
-    for (const v of voices) {
-      const short = v.lang.split('-')[0].toLowerCase();
-      const existing = this.voicesByLang.get(short);
-      // prefer higher-quality network voices (Chrome) over local voices
-      if (!existing || (!v.localService && existing.localService)) {
-        this.voicesByLang.set(short, v);
+  private getVoices(): SpeechSynthesisVoice[] {
+    if (this.synth) {
+      const fresh = this.synth.getVoices();
+      if (fresh.length > 0) {
+        this.cachedVoices = fresh;
+        return fresh;
       }
     }
+    return this.cachedVoices;
   }
 
-  /**
-   * Try hard to find a voice that can speak this language.
-   * Returns null if nothing matches – the browser will still
-   * try its best based on `utterance.lang`.
-   */
-  private findBestVoice(langCode: string): SpeechSynthesisVoice | null {
-    if (!this.synth) return null;
-    const voices = this.synth.getVoices();
-    const locale = LOCALE_MAP[langCode];
+  // ── Voice selection ─────────────────────────────────────────────────────
 
-    // 1️⃣  Exact locale match  (e.g. 'ja-JP')
+  private pickVoice(langCode: string): SpeechSynthesisVoice | null {
+    const voices = this.getVoices();
+    if (voices.length === 0) return null;
+
+    const lc = langCode.toLowerCase();
+    const locale = LOCALE_MAP[lc];
+
+    // 1. Exact locale
     if (locale) {
-      const exact = voices.find(v => v.lang === locale);
-      if (exact) return exact;
+      const found = voices.find(
+        v => v.lang.replace(/_/g, '-').toLowerCase() === locale.toLowerCase(),
+      );
+      if (found) return found;
     }
 
-    // 2️⃣  Any voice whose lang starts with the short code
-    const lc = langCode.toLowerCase();
-    const candidates = voices.filter(
-      v =>
-        v.lang.toLowerCase() === lc ||
-        v.lang.toLowerCase().startsWith(lc + '-'),
-    );
-    // prefer network voices for quality
-    const network = candidates.find(v => !v.localService);
+    // 2. Prefix match, prefer network voices
+    const prefixed = voices.filter(v => {
+      const vl = v.lang.replace(/_/g, '-').toLowerCase();
+      return vl === lc || vl.startsWith(lc + '-');
+    });
+    const network = prefixed.find(v => !v.localService);
     if (network) return network;
-    if (candidates.length > 0) return candidates[0];
+    if (prefixed.length > 0) return prefixed[0];
 
-    // 3️⃣  Pre-built map (catches voices whose BCP-47 tag is non-standard)
-    const mapped = this.voicesByLang.get(lc);
-    if (mapped) return mapped;
+    // 3. Regional fallback chain
+    const fbs = LANG_FALLBACKS[lc];
+    if (fbs) {
+      for (const fb of fbs) {
+        const found = voices.find(
+          v => v.lang.replace(/_/g, '-').toLowerCase() === fb.toLowerCase(),
+        );
+        if (found) return found;
+      }
+    }
 
     return null;
   }
 
-  /* ── public ── */
+  // ── Public API ──────────────────────────────────────────────────────────
 
-  /** Speak `text` in the given language. Returns true if speech started. */
-  speak(text: string, languageCode: string): boolean {
-    if (!this.synth) return false;
-    this.synth.cancel(); // stop any ongoing speech
+  speak(text: string, languageCode: string, onEnd?: () => void): void {
+    this.stop();
+    const done = once(onEnd);
 
-    const utterance = new SpeechSynthesisUtterance(text);
-
-    // Find the best matching voice
-    const voice = this.findBestVoice(languageCode);
-    if (voice) {
-      utterance.voice = voice;
-      utterance.lang = voice.lang; // use the voice's own locale tag
-    } else {
-      // No matching voice – still set lang so the OS-level TTS can try
-      utterance.lang = LOCALE_MAP[languageCode] ?? languageCode;
+    if (!this.synth) {
+      this.playGoogleTTS(text, languageCode, done);
+      return;
     }
 
-    utterance.rate = 0.85;
-    utterance.pitch = 1;
+    const voice = this.pickVoice(languageCode);
 
-    this.synth.speak(utterance);
-    return true;
+    if (voice) {
+      // ── PATH A: Explicit voice match ─────────────────────────────────
+      const utt = new SpeechSynthesisUtterance(text);
+      utt.voice = voice;
+      utt.lang = voice.lang;
+      utt.rate = 0.85;
+      utt.pitch = 1;
+      utt.addEventListener('end', done, { once: true });
+      utt.addEventListener('error', done, { once: true });
+      this.synth.speak(utt);
+      return;
+    }
+
+    // ── PATH B: No explicit match → Google TTS, then Web Speech ────────
+    // Google TTS audio.play() MUST be called synchronously here (user
+    // gesture context) to satisfy the browser's autoplay policy.
+    this.playGoogleTTSThenWebSpeech(text, languageCode, done);
+  }
+
+  stop(): void {
+    this.synth?.cancel();
+    if (this.currentAudio) {
+      this.currentAudio.pause();
+      this.currentAudio.src = '';
+      this.currentAudio = null;
+    }
   }
 
   get isAvailable(): boolean {
     return this.synth !== null;
+  }
+
+  // ── Google TTS with Web Speech fallback ─────────────────────────────────
+
+  /**
+   * Try Google Translate TTS.  If the audio fails to load (403 / CORS /
+   * network error), fall back to Web Speech API with `utterance.lang`.
+   */
+  private playGoogleTTSThenWebSpeech(
+    text: string,
+    langCode: string,
+    done: () => void,
+  ): void {
+    const locale = LOCALE_MAP[langCode] ?? langCode;
+    const tl = locale.split('-')[0];
+    const q = text.slice(0, 200);
+
+    // Full parameter set matching google-tts-api's format
+    const url =
+      `https://translate.google.com/translate_tts` +
+      `?ie=UTF-8&tl=${encodeURIComponent(tl)}&client=tw-ob` +
+      `&q=${encodeURIComponent(q)}` +
+      `&total=1&idx=0&textlen=${q.length}&prev=input&ttsspeed=1`;
+
+    const audio = new Audio(url);
+    audio.volume = 1;
+    this.currentAudio = audio;
+
+    // Guard: only fall back once
+    let fellBack = false;
+    const fallbackToWebSpeech = () => {
+      if (fellBack) return;
+      fellBack = true;
+      this.currentAudio = null;
+      this.speakWithLang(text, langCode, done);
+    };
+
+    audio.addEventListener('ended', done, { once: true });
+    audio.addEventListener('error', fallbackToWebSpeech, { once: true });
+
+    // play() must be synchronous from the click handler
+    audio.play().catch(fallbackToWebSpeech);
+  }
+
+  // ── Web Speech fallback (lang-only) ─────────────────────────────────────
+
+  /**
+   * Web Speech API with only `utterance.lang` set (no explicit voice).
+   * Chrome auto-selects its Google network voice from the lang hint
+   * — this is what makes French, German, Spanish, etc. work even when
+   * getVoices() doesn't list them.
+   */
+  private speakWithLang(
+    text: string,
+    langCode: string,
+    done: () => void,
+  ): void {
+    if (!this.synth) {
+      done();
+      return;
+    }
+
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = LOCALE_MAP[langCode] ?? langCode;
+    utt.rate = 0.85;
+    utt.pitch = 1;
+    utt.addEventListener('end', done, { once: true });
+    utt.addEventListener('error', done, { once: true });
+    this.synth.speak(utt);
+  }
+
+  // ── Standalone Google TTS (no synth available) ──────────────────────────
+
+  private playGoogleTTS(
+    text: string,
+    langCode: string,
+    done: () => void,
+  ): void {
+    try {
+      const locale = LOCALE_MAP[langCode] ?? langCode;
+      const tl = locale.split('-')[0];
+      const q = text.slice(0, 200);
+      const url =
+        `https://translate.google.com/translate_tts` +
+        `?ie=UTF-8&tl=${encodeURIComponent(tl)}&client=tw-ob` +
+        `&q=${encodeURIComponent(q)}` +
+        `&total=1&idx=0&textlen=${q.length}&prev=input&ttsspeed=1`;
+
+      const audio = new Audio(url);
+      audio.volume = 1;
+      this.currentAudio = audio;
+      audio.addEventListener('ended', done, { once: true });
+      audio.addEventListener('error', () => {
+        this.currentAudio = null;
+        done();
+      }, { once: true });
+      audio.play().catch(() => {
+        this.currentAudio = null;
+        done();
+      });
+    } catch {
+      done();
+    }
   }
 }
 

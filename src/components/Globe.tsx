@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import GlobeGL from 'react-globe.gl';
 import { Vector3 } from 'three';
+import { Volume2 } from 'lucide-react';
 import { speechService } from '@/services/speechService';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -207,11 +208,17 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
   }, [ready, dims.w, dims.h, visibleLabels]);
 
   /* ── Click handler ── */
+  const speakTimer = useRef<ReturnType<typeof setTimeout>>();
   const handleSpeak = useCallback((d: GlobeLabelData) => {
-    speechService.speak(d.translation, d.languageCode);
     setActiveLabel(d);
     setIsSpeaking(true);
-    setTimeout(() => setIsSpeaking(false), 2500);
+    clearTimeout(speakTimer.current);
+    // Safety timeout: if onEnd never fires, clear "Speaking…" after 10s
+    speakTimer.current = setTimeout(() => setIsSpeaking(false), 10000);
+    speechService.speak(d.translation, d.languageCode, () => {
+      clearTimeout(speakTimer.current);
+      setIsSpeaking(false);
+    });
   }, []);
 
   /* ── Render ── */
@@ -299,12 +306,12 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
             {activeLabel.country} · {activeLabel.language}
           </p>
           {isSpeaking ? (
-            <p className="text-emerald-400 text-xs mt-1.5 flex items-center gap-1">
-              <span className="inline-block animate-pulse">🔊</span> Speaking…
+            <p className="text-emerald-400 text-xs mt-1.5 flex items-center gap-1.5">
+              <Volume2 size={13} className="animate-pulse" /> Speaking…
             </p>
           ) : (
-            <p className="text-white/30 text-[10px] mt-1.5">
-              Click a label to hear it
+            <p className="text-white/30 text-[10px] mt-1.5 flex items-center gap-1">
+              <Volume2 size={10} /> Click a label to hear it
             </p>
           )}
         </div>
@@ -312,9 +319,9 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
 
       {/* ── Hint bar ── */}
       {labels.length > 0 && !isLoading && (
-        <div className="absolute bottom-1 left-0 right-0 text-center pointer-events-none z-10">
-          <span className="text-[10px] text-white/20 select-none">
-            🔊 Click any translation to hear it · Scroll to zoom
+        <div className="absolute bottom-1 left-0 right-0 flex justify-center pointer-events-none z-10">
+          <span className="text-[10px] text-white/20 select-none inline-flex items-center gap-1">
+            <Volume2 size={10} /> Click any translation to hear it · Scroll to zoom
           </span>
         </div>
       )}
