@@ -1,19 +1,23 @@
 /**
  * Multi-engine Text-to-Speech service.
  *
- * STRATEGY (in priority order, all synchronous from click handler):
+ * ENGINE 1 — Web Speech API  (browser built-in voices)
+ *   Picks a language-specific voice from the browser's voice list.
+ *   Zero latency, works offline for installed voices.
  *
- * 1. pickVoice() finds an explicit voice match → use Web Speech API
- *    with `utterance.voice` set.
+ * ENGINE 2 — Google Translate TTS via /api/tts proxy
+ *   Our own server-side proxy (Vite middleware in dev, Vercel Edge
+ *   Function in production) fetches audio from Google Translate TTS.
+ *   Covers every language Google Translate supports — Arabic, Greek,
+ *   Korean, Filipino, Thai, Vietnamese, etc.
+ *   No CORS issues because it's same-origin.
  *
- * 2. No explicit match → try Google Translate TTS <audio> element.
- *    If audio loads successfully → plays the correct language.
- *    If audio fails (403 / CORS / network) → falls back to (3).
+ * ENGINE 3 — Web Speech API, lang-only  (last resort)
+ *   Sets `utterance.lang` without a specific voice.  Chrome may still
+ *   auto-select a Google network voice for many languages.
  *
- * 3. Web Speech API with only `utterance.lang` set.  Chrome will
- *    auto-select its Google network voice from the lang hint even
- *    when getVoices() doesn't list it — this is how French etc.
- *    keep working.
+ * The audio.play() in Engine 2 is called synchronously from the click
+ * handler to satisfy the browser's autoplay policy.
  */
 
 // ── Language → BCP 47 locale ────────────────────────────────────────────────
@@ -47,6 +51,13 @@ const LANG_FALLBACKS: Record<string, string[]> = {
   me: ['sr-ME', 'sr-RS', 'hr-HR'],
   pt: ['pt-BR', 'pt-PT'],
   tl: ['fil-PH', 'tl-PH'],
+};
+
+// For the TTS proxy, map language codes to simple Google TTS codes
+const TTS_LANG_MAP: Record<string, string> = {
+  tl: 'tl', // Filipino — Google TTS uses "tl", not "fil"
+  no: 'no', // Norwegian
+  he: 'iw', // Hebrew — Google uses old code "iw"
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -142,15 +153,10 @@ class SpeechService {
     this.stop();
     const done = once(onEnd);
 
-    if (!this.synth) {
-      this.playGoogleTTS(text, languageCode, done);
-      return;
-    }
-
+    // ── ENGINE 1: Web Speech API with matched voice ────────────────────
     const voice = this.pickVoice(languageCode);
 
     if (voice) {
-      // ── PATH A: Explicit voice match ─────────────────────────────────
       const utt = new SpeechSynthesisUtterance(text);
       utt.voice = voice;
       utt.lang = voice.lang;
@@ -158,14 +164,13 @@ class SpeechService {
       utt.pitch = 1;
       utt.addEventListener('end', done, { once: true });
       utt.addEventListener('error', done, { once: true });
-      this.synth.speak(utt);
+      if (this.synth) this.synth.speak(utt);
       return;
     }
 
-    // ── PATH B: No explicit match → Google TTS, then Web Speech ────────
-    // Google TTS audio.play() MUST be called synchronously here (user
-    // gesture context) to satisfy the browser's autoplay policy.
-    this.playGoogleTTSThenWebSpeech(text, languageCode, done);
+    // ── ENGINE 2: /api/tts proxy (same-origin, no CORS issues) ─────────
+    // Must call play() synchronously from click to satisfy autoplay.
+    this.playProxyTTS(text, languageCode, done);
   }
 
   stop(): void {
@@ -181,56 +186,46 @@ class SpeechService {
     return this.synth !== null;
   }
 
-  // ── Google TTS with Web Speech fallback ─────────────────────────────────
+  // ── Proxy TTS with Web Speech fallback ──────────────────────────────────
 
-  /**
-   * Try Google Translate TTS.  If the audio fails to load (403 / CORS /
-   * network error), fall back to Web Speech API with `utterance.lang`.
-   */
-  private playGoogleTTSThenWebSpeech(
+  private playProxyTTS(
     text: string,
     langCode: string,
     done: () => void,
   ): void {
     const locale = LOCALE_MAP[langCode] ?? langCode;
-    const tl = locale.split('-')[0];
+    // Use the TTS-specific lang code if it differs from the standard one
+    const tl = TTS_LANG_MAP[langCode] ?? locale.split('-')[0];
     const q = text.slice(0, 200);
 
-    // Full parameter set matching google-tts-api's format
-    const url =
-      `https://translate.google.com/translate_tts` +
-      `?ie=UTF-8&tl=${encodeURIComponent(tl)}&client=tw-ob` +
-      `&q=${encodeURIComponent(q)}` +
-      `&total=1&idx=0&textlen=${q.length}&prev=input&ttsspeed=1`;
+    // Same-origin proxy — works in dev (Vite middleware) and prod (Vercel)
+    const url = `/api/tts?tl=${encodeURIComponent(tl)}&q=${encodeURIComponent(q)}`;
 
     const audio = new Audio(url);
     audio.volume = 1;
     this.currentAudio = audio;
 
-    // Guard: only fall back once
     let fellBack = false;
     const fallbackToWebSpeech = () => {
       if (fellBack) return;
       fellBack = true;
       this.currentAudio = null;
+      // ENGINE 3: Web Speech with lang hint (Chrome may auto-select voice)
       this.speakWithLang(text, langCode, done);
     };
 
-    audio.addEventListener('ended', done, { once: true });
+    audio.addEventListener('ended', () => {
+      this.currentAudio = null;
+      done();
+    }, { once: true });
     audio.addEventListener('error', fallbackToWebSpeech, { once: true });
 
-    // play() must be synchronous from the click handler
+    // play() synchronous from the click handler → autoplay allowed
     audio.play().catch(fallbackToWebSpeech);
   }
 
   // ── Web Speech fallback (lang-only) ─────────────────────────────────────
 
-  /**
-   * Web Speech API with only `utterance.lang` set (no explicit voice).
-   * Chrome auto-selects its Google network voice from the lang hint
-   * — this is what makes French, German, Spanish, etc. work even when
-   * getVoices() doesn't list them.
-   */
   private speakWithLang(
     text: string,
     langCode: string,
@@ -240,7 +235,6 @@ class SpeechService {
       done();
       return;
     }
-
     const utt = new SpeechSynthesisUtterance(text);
     utt.lang = LOCALE_MAP[langCode] ?? langCode;
     utt.rate = 0.85;
@@ -248,40 +242,6 @@ class SpeechService {
     utt.addEventListener('end', done, { once: true });
     utt.addEventListener('error', done, { once: true });
     this.synth.speak(utt);
-  }
-
-  // ── Standalone Google TTS (no synth available) ──────────────────────────
-
-  private playGoogleTTS(
-    text: string,
-    langCode: string,
-    done: () => void,
-  ): void {
-    try {
-      const locale = LOCALE_MAP[langCode] ?? langCode;
-      const tl = locale.split('-')[0];
-      const q = text.slice(0, 200);
-      const url =
-        `https://translate.google.com/translate_tts` +
-        `?ie=UTF-8&tl=${encodeURIComponent(tl)}&client=tw-ob` +
-        `&q=${encodeURIComponent(q)}` +
-        `&total=1&idx=0&textlen=${q.length}&prev=input&ttsspeed=1`;
-
-      const audio = new Audio(url);
-      audio.volume = 1;
-      this.currentAudio = audio;
-      audio.addEventListener('ended', done, { once: true });
-      audio.addEventListener('error', () => {
-        this.currentAudio = null;
-        done();
-      }, { once: true });
-      audio.play().catch(() => {
-        this.currentAudio = null;
-        done();
-      });
-    } catch {
-      done();
-    }
   }
 }
 
