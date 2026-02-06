@@ -149,7 +149,7 @@ const Index = () => {
           <h1 className="text-2xl md:text-3xl font-bold text-white/90 tracking-tight drop-shadow-lg">
             Globe Speak
           </h1>
-          <p className="text-[11px] text-sky-300/40 mt-0.5">
+          <p className="text-[11px] text-sky-300/70 mt-0.5">
             See &amp; hear translations across the world
           </p>
         </div>

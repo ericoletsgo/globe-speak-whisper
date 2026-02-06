@@ -13,12 +13,13 @@
  *      re-render per frame).
  *   4. Dot-product back-face culling hides labels on the far side.
  *
- * The result: every Unicode script renders correctly through the browser's
- * own font engine, and the globe never freezes.
+ * The globe also displays country border polygons loaded from the
+ * Natural Earth dataset (world-atlas TopoJSON → GeoJSON features).
  */
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import GlobeGL from 'react-globe.gl';
 import { Vector3 } from 'three';
+import { feature } from 'topojson-client';
 import { Volume2 } from 'lucide-react';
 import { speechService } from '@/services/speechService';
 
@@ -52,6 +53,18 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
   const [ready, setReady] = useState(false);
   const [activeLabel, setActiveLabel] = useState<GlobeLabelData | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [countries, setCountries] = useState<any[]>([]);
+
+  /* ── Load country border polygons ── */
+  useEffect(() => {
+    fetch('//unpkg.com/world-atlas@2/countries-110m.json')
+      .then(r => r.json())
+      .then(topo => {
+        const geo = feature(topo, topo.objects.countries) as any;
+        setCountries(geo.features);
+      })
+      .catch(() => {}); // silent fail – borders are cosmetic
+  }, []);
 
   /* ── Track container size ── */
   useEffect(() => {
@@ -135,7 +148,6 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
   useEffect(() => {
     if (!ready || !globeEl.current) return;
 
-    // Pre-allocated vectors to avoid GC pressure inside the loop
     const _pos = new Vector3();
     const _norm = new Vector3();
     const _cam = new Vector3();
@@ -147,7 +159,6 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
       if (!running || !globeEl.current) return;
       requestAnimationFrame(tick);
 
-      // Update every other frame (~30 fps) to save CPU
       if (++frame & 1) return;
 
       const globe = globeEl.current;
@@ -162,7 +173,6 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
         const lat = Number(el.dataset.lat);
         const lng = Number(el.dataset.lng);
 
-        // 1. Get world-space position from globe.gl
         let coords: { x: number; y: number; z: number };
         try {
           coords = globe.getCoords(lat, lng, 0.02);
@@ -172,8 +182,6 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
         }
 
         _pos.set(coords.x, coords.y, coords.z);
-
-        // 2. Back-face culling via dot product
         _norm.copy(_pos).normalize();
         const dot = _norm.dot(_cam);
         if (dot < 0.2) {
@@ -181,20 +189,16 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
           return;
         }
 
-        // 3. Project to screen (NDC → pixels)
         _pos.project(camera);
         const sx = (_pos.x * 0.5 + 0.5) * w;
         const sy = (-(_pos.y * 0.5) + 0.5) * h;
 
-        // 4. Off-screen check
         if (sx < -80 || sx > w + 80 || sy < -80 || sy > h + 80) {
           el.style.display = 'none';
           return;
         }
 
-        // 5. Smooth fade near the limb
         const opacity = Math.min(1, (dot - 0.2) * 5);
-
         el.style.display = '';
         el.style.opacity = String(opacity);
         el.style.transform = `translate(${sx}px, ${sy}px) translate(-50%, -100%)`;
@@ -213,7 +217,6 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
     setActiveLabel(d);
     setIsSpeaking(true);
     clearTimeout(speakTimer.current);
-    // Safety timeout: if onEnd never fires, clear "Speaking…" after 10s
     speakTimer.current = setTimeout(() => setIsSpeaking(false), 10000);
     speechService.speak(d.translation, d.languageCode, () => {
       clearTimeout(speakTimer.current);
@@ -224,7 +227,7 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
   /* ── Render ── */
   return (
     <div ref={containerRef} className="w-full h-full relative">
-      {/* 3D Globe – earth only, no label layers */}
+      {/* 3D Globe – satellite texture + country border polygons */}
       {dims.w > 0 && dims.h > 0 && (
         <GlobeGL
           ref={globeEl}
@@ -234,9 +237,15 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
           bumpImageUrl="//unpkg.com/three-globe/example/img/earth-topology.png"
           backgroundImageUrl="//unpkg.com/three-globe/example/img/night-sky.png"
           atmosphereColor="lightskyblue"
-          atmosphereAltitude={0.15}
+          atmosphereAltitude={0.18}
           animateIn={true}
           onGlobeReady={() => setReady(true)}
+          // ── Country border polygons ──
+          polygonsData={countries}
+          polygonCapColor={() => 'rgba(0, 0, 0, 0)'}
+          polygonSideColor={() => 'rgba(0, 0, 0, 0)'}
+          polygonStrokeColor={() => 'rgba(180, 220, 255, 0.35)'}
+          polygonAltitude={0.002}
         />
       )}
 
@@ -310,7 +319,7 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
               <Volume2 size={13} className="animate-pulse" /> Speaking…
             </p>
           ) : (
-            <p className="text-white/30 text-[10px] mt-1.5 flex items-center gap-1">
+            <p className="text-white/50 text-[10px] mt-1.5 flex items-center gap-1">
               <Volume2 size={10} /> Click a label to hear it
             </p>
           )}
@@ -320,7 +329,7 @@ export const Globe = ({ labels, isLoading, onZoomTierChange }: GlobeProps) => {
       {/* ── Hint bar ── */}
       {labels.length > 0 && !isLoading && (
         <div className="absolute bottom-1 left-0 right-0 flex justify-center pointer-events-none z-10">
-          <span className="text-[10px] text-white/20 select-none inline-flex items-center gap-1">
+          <span className="text-[10px] text-white/40 select-none inline-flex items-center gap-1">
             <Volume2 size={10} /> Click any translation to hear it · Scroll to zoom
           </span>
         </div>

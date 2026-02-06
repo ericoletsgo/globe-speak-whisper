@@ -45,7 +45,7 @@ export const TranslationInput = ({
           <span className="ml-2 hidden sm:inline text-sm">Translate</span>
         </Button>
       </div>
-      <p className="text-center mt-2 text-[10px] text-white/25 select-none">
+      <p className="text-center mt-2 text-[10px] text-white/50 select-none">
         {text.length > 0
           ? `${text.length}/40 characters`
           : 'Zoom in to discover more translations'}
