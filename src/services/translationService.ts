@@ -6,6 +6,20 @@
  */
 import axios from 'axios';
 
+/**
+ * MyMemory sometimes returns raw HTML tags (`<sub>`, `<sup>`, `&amp;`, etc.)
+ * in its response.  This strips them and decodes entities so we get clean
+ * Unicode text only.
+ */
+function cleanHtml(raw: string): string {
+  if (!raw) return raw;
+  const el = document.createElement('div');
+  el.innerHTML = raw;                        // decodes &amp; → &  etc.
+  let text = el.textContent || el.innerText || raw;
+  text = text.replace(/<[^>]*>/g, '');       // strip any leftover tags
+  return text.trim();
+}
+
 class TranslationService {
   private cache = new Map<string, string>();
 
@@ -30,7 +44,8 @@ class TranslationService {
         },
       );
 
-      const result: string | undefined = data?.responseData?.translatedText;
+      const raw: string | undefined = data?.responseData?.translatedText;
+      const result = raw ? cleanHtml(raw) : '';
 
       if (
         result &&

@@ -1,6 +1,12 @@
 /**
  * Web Speech API service – pronounces translations using the browser's
  * built-in text-to-speech engine.  No external API key required.
+ *
+ * Voice matching strategy (tries in order):
+ *   1. Exact locale match  (e.g. voice.lang === 'ja-JP')
+ *   2. Prefix match         (e.g. voice.lang starts with 'ja')
+ *   3. Pre-built map        (populated at page load + voiceschanged)
+ *   4. Fallback: just set utterance.lang and let the browser pick
  */
 
 const LOCALE_MAP: Record<string, string> = {
@@ -53,6 +59,41 @@ class SpeechService {
     }
   }
 
+  /**
+   * Try hard to find a voice that can speak this language.
+   * Returns null if nothing matches – the browser will still
+   * try its best based on `utterance.lang`.
+   */
+  private findBestVoice(langCode: string): SpeechSynthesisVoice | null {
+    if (!this.synth) return null;
+    const voices = this.synth.getVoices();
+    const locale = LOCALE_MAP[langCode];
+
+    // 1️⃣  Exact locale match  (e.g. 'ja-JP')
+    if (locale) {
+      const exact = voices.find(v => v.lang === locale);
+      if (exact) return exact;
+    }
+
+    // 2️⃣  Any voice whose lang starts with the short code
+    const lc = langCode.toLowerCase();
+    const candidates = voices.filter(
+      v =>
+        v.lang.toLowerCase() === lc ||
+        v.lang.toLowerCase().startsWith(lc + '-'),
+    );
+    // prefer network voices for quality
+    const network = candidates.find(v => !v.localService);
+    if (network) return network;
+    if (candidates.length > 0) return candidates[0];
+
+    // 3️⃣  Pre-built map (catches voices whose BCP-47 tag is non-standard)
+    const mapped = this.voicesByLang.get(lc);
+    if (mapped) return mapped;
+
+    return null;
+  }
+
   /* ── public ── */
 
   /** Speak `text` in the given language. Returns true if speech started. */
@@ -61,9 +102,17 @@ class SpeechService {
     this.synth.cancel(); // stop any ongoing speech
 
     const utterance = new SpeechSynthesisUtterance(text);
-    const voice = this.voicesByLang.get(languageCode);
-    if (voice) utterance.voice = voice;
-    utterance.lang = LOCALE_MAP[languageCode] ?? languageCode;
+
+    // Find the best matching voice
+    const voice = this.findBestVoice(languageCode);
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang; // use the voice's own locale tag
+    } else {
+      // No matching voice – still set lang so the OS-level TTS can try
+      utterance.lang = LOCALE_MAP[languageCode] ?? languageCode;
+    }
+
     utterance.rate = 0.85;
     utterance.pitch = 1;
 
